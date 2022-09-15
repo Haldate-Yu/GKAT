@@ -7,14 +7,14 @@ import sys
 
 from deepwalk import node2vec
 
-
-
 """
  Prepare adjacency matrix by expanding up to a given neighbourhood.
  This will insert loops on every node.
  Finally, the matrix is converted to bias vectors.
  Expected shape: [graph, nodes, nodes]
 """
+
+
 def adj_to_bias(adj, sizes, nhood=1):
     nb_graphs = adj.shape[0]
     mt = np.empty(adj.shape)
@@ -40,6 +40,7 @@ def parse_index_file(filename):
         index.append(int(line.strip()))
     return index
 
+
 def sample_mask(idx, l):
     """Create mask."""
     mask = np.zeros(l)
@@ -47,110 +48,47 @@ def sample_mask(idx, l):
     return np.array(mask, dtype=np.bool)
 
 
+def load_data(dataset_str, args):  # {'pubmed', 'citeseer', 'cora'}
+    """Load data."""
+    names = ['x', 'y', 'tx', 'ty', 'allx', 'ally', 'graph']
+    objects = []
+    for i in range(len(names)):
+        with open("data/ind.{}.{}".format(dataset_str, names[i]), 'rb') as f:
+            if sys.version_info > (3, 0):
+                objects.append(pkl.load(f, encoding='latin1'))
+            else:
+                objects.append(pkl.load(f))
 
+    x, y, tx, ty, allx, ally, graph = tuple(objects)
+    test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset_str))
+    test_idx_range = np.sort(test_idx_reorder)
 
+    if dataset_str == 'citeseer':
+        # Fix citeseer dataset (there are some isolated nodes in the graph)
+        # Find isolated nodes, add them as zero-vecs into the right position
+        test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder) + 1)
+        tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
+        tx_extended[test_idx_range - min(test_idx_range), :] = tx
+        tx = tx_extended
+        ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
+        ty_extended[test_idx_range - min(test_idx_range), :] = ty
+        ty = ty_extended
 
-def load_data(dataset_str, args): # {'pubmed', 'citeseer', 'cora'}
-  """Load data."""
-  names = ['x', 'y', 'tx', 'ty', 'allx', 'ally', 'graph']
-  objects = []
-  for i in range(len(names)):
-      with open( "data/ind.{}.{}".format(dataset_str, names[i]), 'rb') as f:
-          if sys.version_info > (3, 0):
-              objects.append(pkl.load(f, encoding='latin1'))
-          else:
-              objects.append(pkl.load(f))
+    features = sp.vstack((allx, tx)).tolil()
+    features[test_idx_reorder, :] = features[test_idx_range, :]
+    adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
+    # adj = nx.from_dict_of_lists(graph)
 
-  x, y, tx, ty, allx, ally, graph = tuple(objects)
-  test_idx_reorder = parse_index_file( "data/ind.{}.test.index".format(dataset_str))
-  test_idx_range = np.sort(test_idx_reorder)
+    labels = np.vstack((ally, ty))
+    labels[test_idx_reorder, :] = labels[test_idx_range, :]
 
-  if dataset_str == 'citeseer':
-      # Fix citeseer dataset (there are some isolated nodes in the graph)
-      # Find isolated nodes, add them as zero-vecs into the right position
-      test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder)+1)
-      tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
-      tx_extended[test_idx_range-min(test_idx_range), :] = tx
-      tx = tx_extended
-      ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
-      ty_extended[test_idx_range-min(test_idx_range), :] = ty
-      ty = ty_extended
+    idx_test = test_idx_range.tolist()
+    idx_train = range(len(y))
+    idx_val = range(len(y), len(y) + 500)
 
-  features = sp.vstack((allx, tx)).tolil()
-  features[test_idx_reorder, :] = features[test_idx_range, :]
-  adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
-  #adj = nx.from_dict_of_lists(graph)
-
-
-  labels = np.vstack((ally, ty))
-  labels[test_idx_reorder, :] = labels[test_idx_range, :]
-
-  idx_test = test_idx_range.tolist()
-  idx_train = range(len(y))
-  idx_val = range(len(y), len(y)+500)
-
-  train_mask = sample_mask(idx_train, labels.shape[0])
-  val_mask = sample_mask(idx_val, labels.shape[0])
-  test_mask = sample_mask(idx_test, labels.shape[0])
-
-  y_train = np.zeros(labels.shape)
-  y_val = np.zeros(labels.shape)
-  y_test = np.zeros(labels.shape)
-  y_train[train_mask, :] = labels[train_mask, :]
-  y_val[val_mask, :] = labels[val_mask, :]
-  y_test[test_mask, :] = labels[test_mask, :]
-
-
-  edges = []
-  for k in graph.keys():
-    for j in range(len(graph[k])):
-      edges.append([k, graph[k][j]])
-
-  G = nx.DiGraph()
-
-  # add edges
-  for i in range(len(edges)):
-    src = str(edges[i][0])
-    dst = str(edges[i][1])
-    G.add_edge(src, dst)
-    G[src][dst]['weight'] = 1.0          
-
-  # add node label
-  for i in range(len(labels)):
-    try:
-      G.nodes[str(i)]['label'] = np.where(labels[i,:]==1)[0][0]
-    except:
-      pass
-
-  features_dense = features.todense()
-  for i in range(len(features_dense)):
-    G.nodes[str(i)]['feature'] = features_dense[i,:]
-
-  g = Graph(G)
-
-  model = node2vec.Node2vec_onlywalk(graph=g, path_length=args.walk_length, num_paths=args.number_walks, dim=4, workers=8, window=5, p = 1, q = 1, dw=False)
-      
-
-  return adj, model.walker, features, y_train, y_val, y_test, train_mask, val_mask, test_mask
-
-
-
-def load_random_data(size):
-
-    adj = sp.random(size, size, density=0.002) # density similar to cora
-    features = sp.random(size, 1000, density=0.015)
-    int_labels = np.random.randint(7, size=(size))
-    labels = np.zeros((size, 7)) # Nx7
-    labels[np.arange(size), int_labels] = 1
-
-    train_mask = np.zeros((size,)).astype(bool)
-    train_mask[np.arange(size)[0:int(size/2)]] = 1
-
-    val_mask = np.zeros((size,)).astype(bool)
-    val_mask[np.arange(size)[int(size/2):]] = 1
-
-    test_mask = np.zeros((size,)).astype(bool)
-    test_mask[np.arange(size)[int(size/2):]] = 1
+    train_mask = sample_mask(idx_train, labels.shape[0])
+    val_mask = sample_mask(idx_val, labels.shape[0])
+    test_mask = sample_mask(idx_test, labels.shape[0])
 
     y_train = np.zeros(labels.shape)
     y_val = np.zeros(labels.shape)
@@ -158,12 +96,70 @@ def load_random_data(size):
     y_train[train_mask, :] = labels[train_mask, :]
     y_val[val_mask, :] = labels[val_mask, :]
     y_test[test_mask, :] = labels[test_mask, :]
-  
+
+    edges = []
+    for k in graph.keys():
+        for j in range(len(graph[k])):
+            edges.append([k, graph[k][j]])
+
+    G = nx.DiGraph()
+
+    # add edges
+    for i in range(len(edges)):
+        src = str(edges[i][0])
+        dst = str(edges[i][1])
+        G.add_edge(src, dst)
+        G[src][dst]['weight'] = 1.0
+
+        # add node label
+    for i in range(len(labels)):
+        try:
+            G.nodes[str(i)]['label'] = np.where(labels[i, :] == 1)[0][0]
+        except:
+            pass
+
+    features_dense = features.todense()
+    for i in range(len(features_dense)):
+        G.nodes[str(i)]['feature'] = features_dense[i, :]
+
+    g = Graph(G)
+
+    model = node2vec.Node2vec_onlywalk(graph=g, path_length=args.walk_length, num_paths=args.number_walks, dim=4,
+                                       workers=8, window=5, p=1, q=1, dw=False)
+
+    return adj, model.walker, features, y_train, y_val, y_test, train_mask, val_mask, test_mask
+
+
+def load_random_data(size):
+    adj = sp.random(size, size, density=0.002)  # density similar to cora
+    features = sp.random(size, 1000, density=0.015)
+    int_labels = np.random.randint(7, size=(size))
+    labels = np.zeros((size, 7))  # Nx7
+    labels[np.arange(size), int_labels] = 1
+
+    train_mask = np.zeros((size,)).astype(bool)
+    train_mask[np.arange(size)[0:int(size / 2)]] = 1
+
+    val_mask = np.zeros((size,)).astype(bool)
+    val_mask[np.arange(size)[int(size / 2):]] = 1
+
+    test_mask = np.zeros((size,)).astype(bool)
+    test_mask[np.arange(size)[int(size / 2):]] = 1
+
+    y_train = np.zeros(labels.shape)
+    y_val = np.zeros(labels.shape)
+    y_test = np.zeros(labels.shape)
+    y_train[train_mask, :] = labels[train_mask, :]
+    y_val[val_mask, :] = labels[val_mask, :]
+    y_test[test_mask, :] = labels[test_mask, :]
+
     # sparse NxN, sparse NxF, norm NxC, ..., norm Nx1, ...
     return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask
 
+
 def sparse_to_tuple(sparse_mx):
     """Convert sparse matrix to tuple representation."""
+
     def to_tuple(mx):
         if not sp.isspmatrix_coo(mx):
             mx = mx.tocoo()
@@ -180,6 +176,7 @@ def sparse_to_tuple(sparse_mx):
 
     return sparse_mx
 
+
 def standardize_data(f, train_mask):
     """Standardize feature matrix and convert to tuple representation"""
     # standardize data
@@ -192,6 +189,7 @@ def standardize_data(f, train_mask):
     f = (f - mu) / sigma
     return f
 
+
 def preprocess_features(features):
     """Row-normalize feature matrix and convert to tuple representation"""
     rowsum = np.array(features.sum(1))
@@ -200,6 +198,7 @@ def preprocess_features(features):
     r_mat_inv = sp.diags(r_inv)
     features = r_mat_inv.dot(features)
     return features.todense(), sparse_to_tuple(features)
+
 
 def normalize_adj(adj):
     """Symmetrically normalize adjacency matrix."""
@@ -216,6 +215,7 @@ def preprocess_adj(adj):
     adj_normalized = normalize_adj(adj + sp.eye(adj.shape[0]))
     return sparse_to_tuple(adj_normalized)
 
+
 def preprocess_adj_bias(adj):
     num_nodes = adj.shape[0]
     adj = adj + sp.eye(num_nodes)  # self-loop
@@ -223,13 +223,10 @@ def preprocess_adj_bias(adj):
     if not sp.isspmatrix_coo(adj):
         adj = adj.tocoo()
     adj = adj.astype(np.float32)
-    indices = np.vstack((adj.col, adj.row)).transpose()  # This is where I made a mistake, I used (adj.row, adj.col) instead
+    indices = np.vstack(
+        (adj.col, adj.row)).transpose()  # This is where I made a mistake, I used (adj.row, adj.col) instead
     # return tf.SparseTensor(indices=indices, values=adj.data, dense_shape=adj.shape)
     return indices, adj.data, adj.shape
-
-
-
-
 
 
 class Graph(object):
@@ -242,7 +239,6 @@ class Graph(object):
         self.encode_node()
 
     def encode_node(self):
-
         look_up = self.look_up_dict
         look_back = self.look_back_list
         for node in self.G.nodes():
@@ -250,7 +246,3 @@ class Graph(object):
             look_back.append(str(node))
             self.node_size += 1
             self.G.nodes[node]['status'] = ''
-
- 
- 
- 
